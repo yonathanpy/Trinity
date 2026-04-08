@@ -1,26 +1,24 @@
 # trinity
 
-multi-domain defensive control plane for ingress pressure, authentication abuse, and packet-level anomaly enforcement
+deterministic multi-domain enforcement framework for ingress pressure, authentication abuse, and packet-level anomaly control
 
-designed for controlled enterprise environments and restricted infrastructure surfaces
+engineered for controlled infrastructure and restricted network perimeters
 
-no exposed learning layers  
-no external dependency chains  
-direct signal correlation with kernel-level enforcement  
+no external analysis pipelines  
+no adaptive ambiguity  
+no delayed mitigation paths  
 
 ---
 
-## overview
+## scope
 
-trinity operates as a unified defensive system built on three independent signal domains:
+trinity enforces real-time defensive control across three independent signal domains:
 
-* ingress pressure (connection saturation / volumetric behavior)
+* ingress pressure (connection density / burst behavior)
 * authentication abuse (credential interaction anomalies)
-* wire anomaly (packet-level irregularities and flow deviation)
+* wire anomalies (packet rate / flow deviation)
 
-each domain emits deterministic signals into a shared state layer consumed by an enforcement plane.
-
-this design avoids delayed response models and eliminates reliance on external analysis pipelines.
+signals are evaluated synchronously and enforced at kernel ingress.
 
 ---
 
@@ -29,217 +27,242 @@ this design avoids delayed response models and eliminates reliance on external a
     trinity/
 
     ├── ingress/
-    │   └── probe (xdp-based signal extraction)
+    │   ├── probe_kern.c
+    │   └── probe_user.c
 
     ├── auth/
-    │   └── guard (authentication surface monitoring)
+    │   └── guard.go
 
     ├── wire/
-    │   └── sensor (packet inspection and anomaly detection)
+    │   └── sensor.py
 
     ├── core/
-    │   └── enforcement (kernel-level decision layer)
+    │   ├── enforce_kern.c
+    │   └── loader.c
 
     ├── maps/
-    │   └── shared state definitions
+    │   └── state.h
 
     └── README.md
 
 ---
 
-## execution model
+## execution flow
 
-ingress → pressure signal  
-auth → abuse signal  
-wire → anomaly signal  
-core → enforcement  
+[ ingress ] → pressure signal  
+[ auth ] → abuse signal  
+[ wire ] → anomaly signal  
 
-all signals converge into shared maps and are evaluated in real time within the enforcement layer.
+→ shared state maps  
 
-no asynchronous processing  
-no queued decision paths  
+→ [ xdp enforcement ] → drop / pass  
 
----
-
-## ingress domain
-
-captures connection-level pressure using xdp hooks at interface ingress
-
-behavioral focus:
-
-* rapid connection bursts
-* repeated source activity
-* abnormal connection density per origin
-
-implementation detail:
-
-* eBPF maps used for per-source tracking
-* atomic counters with bounded map sizes
-* early-drop capability available at driver level
-
-note:  
-full parsing and key extraction logic intentionally minimized in public release
+no queued processing  
+no asynchronous evaluation  
 
 ---
 
-## authentication domain
+## ingress instrumentation
 
-monitors authentication surfaces for abuse patterns and credential interaction anomalies
+xdp-based interception at interface ingress for early signal extraction
 
-behavioral focus:
+partial implementation:
 
-* rapid retry sequences
-* distributed credential attempts
-* inconsistent request timing
+    #include <linux/bpf.h>
+    #include <bpf/bpf_helpers.h>
+    #include <linux/if_ether.h>
+    #include <linux/ip.h>
 
-controls:
+    struct {
+        __uint(type, BPF_MAP_TYPE_LRU_HASH);
+        __uint(max_entries, 131072);
+        __type(key, __u32);
+        __type(value, __u64);
+    } flow_cnt SEC(".maps");
 
-* bounded request windows
-* per-origin tracking
-* immediate denial on threshold breach
+    SEC("xdp")
+    int probe(struct xdp_md *ctx)
+    {
+        void *data = (void *)(long)ctx->data;
+        void *data_end = (void *)(long)ctx->data_end;
 
-note:  
-rate correlation and adaptive controls are not exposed
+        struct ethhdr *eth = data;
+        if ((void*)(eth + 1) > data_end)
+            return XDP_PASS;
+
+        if (eth->h_proto != __constant_htons(ETH_P_IP))
+            return XDP_PASS;
+
+        struct iphdr *ip = data + sizeof(*eth);
+        if ((void*)(ip + 1) > data_end)
+            return XDP_PASS;
+
+        __u32 src = ip->saddr;
+
+        __u64 *cnt = bpf_map_lookup_elem(&flow_cnt, &src);
+        if (cnt)
+            __sync_fetch_and_add(cnt, 1);
+        else {
+            __u64 init = 1;
+            bpf_map_update_elem(&flow_cnt, &src, &init, BPF_ANY);
+        }
+
+        return XDP_PASS;
+    }
 
 ---
 
-## wire domain
+## authentication surface control
 
-performs packet-level inspection for anomaly detection outside normal flow characteristics
+bounded sliding-window tracking for credential interaction enforcement
 
-behavioral focus:
+partial implementation:
 
-* packet rate irregularities
-* protocol misuse patterns
-* abnormal source behavior
+    var window = make(map[string][]int64)
 
-implementation:
+    func track(ip string, now int64) int {
+        entries := window[ip]
 
-* passive inspection with minimal overhead
-* selective state tracking
-* anomaly signaling to shared state
+        var filtered []int64
+        for _, t := range entries {
+            if now-t < 10000 {
+                filtered = append(filtered, t)
+            }
+        }
 
-note:  
-deep inspection heuristics and pattern matching rules are restricted
+        filtered = append(filtered, now)
+        window[ip] = filtered
 
----
-
-## enforcement layer
-
-kernel-level enforcement using xdp for immediate response
-
-capabilities:
-
-* drop decision at ingress
-* zero-copy packet rejection
-* constant-time lookup via maps
-
-decision inputs:
-
-* ingress pressure state
-* authentication abuse state
-* wire anomaly state
+        return len(filtered)
+    }
 
 enforcement model:
 
-* deterministic thresholds
-* no probabilistic scoring
-* no delayed mitigation
+* fixed observation window
+* deterministic cutoff
+* immediate rejection on overflow
 
 ---
 
-## shared state model
+## wire anomaly inspection
 
-state is coordinated through bounded maps:
+low-overhead packet observation for burst and interval anomalies
 
-* per-source activity counters
-* enforcement flags
-* threshold indicators
+partial implementation:
 
-design constraints:
+    packet_rate = {}
 
-* fixed-size allocation
-* predictable lookup cost
-* no dynamic resizing
+    def update(src, ts):
+        if src not in packet_rate:
+            packet_rate[src] = []
 
----
+        packet_rate[src] = [t for t in packet_rate[src] if ts - t < 5]
+        packet_rate[src].append(ts)
 
-## deployment model
+        if len(packet_rate[src]) > LIMIT:
+            return True
 
-requirements:
-
-* linux kernel with eBPF/XDP support
-* root-level access for interface attachment
-* controlled network interface
-
-execution flow:
-
-1. compile ebpf components
-2. attach enforcement program to interface
-3. launch authentication monitor
-4. activate packet sensor
-
-all components operate independently but converge at enforcement layer
+        return False
 
 ---
 
-## security posture
+## enforcement plane
 
-* kernel-level mitigation (no user-space delay)
-* strict signal isolation per domain
-* deterministic behavior under load
-* no external service reliance
-* minimized attack surface
+xdp-based decision layer with constant-time lookup
+
+partial implementation:
+
+    struct {
+        __uint(type, BPF_MAP_TYPE_HASH);
+        __uint(max_entries, 65536);
+        __type(key, __u32);
+        __type(value, __u8);
+    } deny SEC(".maps");
+
+    SEC("xdp")
+    int enforce(struct xdp_md *ctx)
+    {
+        __u32 src = extract_src_ip(ctx);
+
+        __u8 *flag = bpf_map_lookup_elem(&deny, &src);
+        if (flag)
+            return XDP_DROP;
+
+        return XDP_PASS;
+    }
+
+---
+
+## shared state
+
+`maps/state.h`
+
+    #define MAX_TRACKED        131072
+    #define AUTH_WINDOW_MS     10000
+    #define PACKET_INTERVAL    5
+    #define DROP_THRESHOLD     256
+
+properties:
+
+* fixed-size maps
+* bounded memory usage
+* predictable lookup latency
+
+---
+
+## build and attach
+
+    clang -O2 -target bpf -c ingress/probe_kern.c -o probe.o
+    clang -O2 -target bpf -c core/enforce_kern.c -o enforce.o
+
+    ip link set dev eth0 xdp obj enforce.o sec xdp
+
+---
+
+## defensive characteristics
+
+* kernel-level packet rejection (no user-space delay)
+* constant-time enforcement path
+* domain-isolated signal generation
+* no dependency on external telemetry
 
 ---
 
 ## operational constraints
 
-* requires controlled deployment environment
-* thresholds require manual tuning
-* no adaptive learning included
-* assumes trusted internal configuration
+* requires eBPF/XDP-capable kernel
+* root privileges required
+* thresholds must be tuned per environment
 
-not intended for:
+not designed for:
 
 * public multi-tenant exposure
-* unmanaged environments
+* unmanaged network surfaces
 * dynamic policy generation systems
 
 ---
 
-## controlled exposure notice
+## controlled release
 
-this repository contains a reduced implementation surface.
+this repository contains a restricted implementation surface.
 
-the following components are intentionally limited:
+excluded components:
 
-* full packet parsing logic
-* correlation heuristics
-* adaptive thresholding
-* enforcement tuning mechanisms
-
-complete implementation remains restricted to controlled environments.
-
----
-
-## extension vectors
-
-* netlink-based control plane integration
-* per-subnet aggregation layers
-* protocol-aware anomaly classification
-* integration with upstream filtering systems
+* full packet parsing routines
+* cross-domain correlation logic
+* adaptive thresholding mechanisms
+* production enforcement tuning
 
 ---
 
 ## summary
 
-trinity enforces a direct defensive pipeline:
+trinity implements a direct defensive pipeline:
 
-observe → signal → correlate → enforce
+observe → signal → enforce
 
 no abstraction layers  
-no deferred response  
-no uncontrolled behavior  
+no deferred decisions  
+no uncontrolled state  
 
-designed for operators requiring deterministic control over ingress surfaces and authentication boundaries
+designed for operators requiring strict, low-latency control over ingress and authentication surfaces
