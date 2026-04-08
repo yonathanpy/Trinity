@@ -1,4 +1,4 @@
-# trinity
+#     Trinity
 
 deterministic multi-domain enforcement framework for ingress pressure, authentication abuse, and packet-level anomaly control
 
