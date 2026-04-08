@@ -256,13 +256,10 @@ excluded components:
 ---
 
 ## summary
+Trinity
 
-trinity implements a direct defensive pipeline:
+Advanced enforcement framework for real-time defensive control over network ingress and authentication surfaces.
 
-observe → signal → enforce
-
-no abstraction layers  
-no deferred decisions  
-no uncontrolled state  
-
-designed for operators requiring strict, low-latency control over ingress and authentication surfaces
+Signals monitored across three domains: ingress, auth, wire
+Immediate kernel-level decision path
+Designed for strict, low-latency operational environments
